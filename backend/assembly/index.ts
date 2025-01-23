@@ -5,12 +5,16 @@ import { JSON } from 'json-as';
 const hostName = 'neo4j';
 
 /**
- * Get all stations
+ * Get all stations from Neo4j
  */
 export function getAllStations(): Station[] {
   const query = `
   MATCH (s:Station)
-  RETURN s.name as name, s.zone as zone
+  RETURN s.name AS name, 
+         s.latitude AS latitude, 
+         s.longitude AS longitude,
+         s.zone AS zone,
+         ID(s) AS id
   ORDER BY s.name`;
 
   const result = neo4j.executeQuery(hostName, query);
@@ -19,54 +23,89 @@ export function getAllStations(): Station[] {
   for (let i = 0; i < result.Records.length; i++) {
     const record = result.Records[i];
     const name = record.getValue<string>('name');
+    const latitude = record.getValue<f32>('latitude');
+    const longitude = record.getValue<f32>('longitude');
     const zone = record.getValue<string>('zone');
-    stations.push(new Station(name, name, 0.0, 0.0, zone));
+    const id = record.getValue<string>('id');
+
+    stations.push(new Station(id, name, latitude, longitude, zone));
   }
 
   return stations;
 }
 
 /**
- * Get station by name
+ * Search stations by name
  */
-export function getStationByName(stationName: string): Station | null {
+export function searchStations(searchTerm: string, limit: i32 = 20): Station[] {
+  const vars = new neo4j.Variables();
+  vars.set('searchTerm', searchTerm.toLowerCase());
+  vars.set('limit', limit);
+
+  const query = `
+  MATCH (s:Station)
+  WHERE toLower(s.name) CONTAINS $searchTerm
+  RETURN s.name AS name,
+         s.latitude AS latitude,
+         s.longitude AS longitude, 
+         s.zone AS zone,
+         ID(s) AS id
+  LIMIT toInteger($limit)`;
+
+  const result = neo4j.executeQuery(hostName, query, vars);
+  const stations: Station[] = [];
+
+  for (let i = 0; i < result.Records.length; i++) {
+    const record = result.Records[i];
+    const name = record.getValue<string>('name');
+    const latitude = record.getValue<f32>('latitude');
+    const longitude = record.getValue<f32>('longitude');
+    const zone = record.getValue<string>('zone');
+    const id = record.getValue<string>('id');
+
+    stations.push(new Station(id, name, latitude, longitude, zone));
+  }
+
+  return stations;
+}
+
+/**
+ * Get station details including connections
+ */
+export function getStationDetails(stationName: string): Station | null {
   const vars = new neo4j.Variables();
   vars.set('name', stationName);
 
   const query = `
   MATCH (s:Station {name: $name})
-  RETURN s.name as name, s.zone as zone`;
+  OPTIONAL MATCH (s)-[r]->(connected:Station)
+  WITH s, collect({station: connected.name, line: type(r)}) as connections
+  RETURN s.name AS name,
+         s.latitude AS latitude,
+         s.longitude AS longitude,
+         s.zone AS zone,
+         ID(s) AS id,
+         connections`;
 
-  const results = neo4j.executeQuery(hostName, query, vars);
+  const result = neo4j.executeQuery(hostName, query, vars);
 
-  if (results.Records.length === 0) {
+  if (result.Records.length === 0) {
     return null;
   }
 
-  const record = results.Records[0];
-  return new Station(record.getValue<string>('name'), record.getValue<string>('name'), 0.0, 0.0, record.getValue<string>('zone'));
-}
+  const record = result.Records[0];
+  const name = record.getValue<string>('name');
+  const latitude = record.getValue<f32>('latitude');
+  const longitude = record.getValue<f32>('longitude');
+  const zone = record.getValue<string>('zone');
+  const id = record.getValue<string>('id');
 
-/**
- * Find connected stations
- */
-export function getConnectedStations(stationName: string): Station[] {
-  const vars = new neo4j.Variables();
-  vars.set('name', stationName);
+  const station = new Station(id, name, latitude, longitude, zone);
 
-  const query = `
-  MATCH (s:Station {name: $name})-[r]->(connected:Station)
-  RETURN connected.name as name, connected.zone as zone`;
+  const connections = JSON.parse<Connection[]>(record.get('connections'));
+  station.connections = connections;
 
-  const results = neo4j.executeQuery(hostName, query, vars);
-  const stations: Station[] = [];
-
-  for (let i = 0; i < results.Records.length; i++) {
-    const record = results.Records[i];
-    stations.push(new Station(record.getValue<string>('name'), record.getValue<string>('name'), 0.0, 0.0, record.getValue<string>('zone')));
-  }
-
-  return stations;
+  return station;
 }
 
 /**
